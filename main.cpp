@@ -3,9 +3,26 @@
 bool g_bESPEnabled = false;
 bool g_bKeyHandled = false;
 
-// ฟังก์ชันเปิด/ปิด Nametag SAMP (ESP Name + ID + Color)
+// ฟังก์ชันค้นหา Memory Pattern (Pattern Scanning) เพื่อรองรับ SAMP ทุกเวอร์ชัน
+BYTE* FindPattern(HMODULE hModule, const char* pattern, const char* mask) {
+    MODULEINFO modInfo;
+    GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(MODULEINFO));
+    DWORD base = (DWORD)hModule;
+    DWORD size = modInfo.SizeOfImage;
+    DWORD patternLength = (DWORD)strlen(mask);
+
+    for (DWORD i = 0; i < size - patternLength; i++) {
+        bool found = true;
+        for (DWORD j = 0; j < patternLength; j++) {
+            found &= mask[j] == '?' || pattern[j] == *(char*)(base + i + j);
+        }
+        if (found) return (BYTE*)(base + i);
+    }
+    return nullptr;
+}
+
 void ProcessESPName() {
-    // เช็คการกด Ctrl + L (VK_CONTROL + 'L')
+    // เช็คการกดปุ่ม Ctrl + L
     if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('L') & 0x8000)) {
         if (!g_bKeyHandled) {
             g_bESPEnabled = !g_bESPEnabled;
@@ -15,25 +32,31 @@ void ProcessESPName() {
         g_bKeyHandled = false;
     }
 
-    // Address Memory บังคับวาด Nametag SAMP ทะลุกำแพง (SAMP v0.3.7 R1)
-    uintptr_t sampBase = reinterpret_cast<uintptr_t>(GetModuleHandleA("samp.dll"));
-    if (!sampBase) return;
+    HMODULE hSamp = GetModuleHandleA("samp.dll");
+    if (!hSamp) return;
 
-    // Offset สำหรับปิด/เปิด Render Distance Check ของ NameTag
-    DWORD dwAddress = sampBase + 0x609CD; 
-
-    DWORD dwOldProtect;
-    VirtualProtect(reinterpret_cast<LPVOID>(dwAddress), 2, PAGE_EXECUTE_READWRITE, &dwOldProtect);
-    
-    if (g_bESPEnabled) {
-        // NOP สั่งให้เรนเดอร์ชื่อ ID และสีชื่อตลอดเวลา
-        *reinterpret_cast<WORD*>(dwAddress) = 0x9090;
-    } else {
-        // คืนค่า Memory เดิมของ SAMP
-        *reinterpret_cast<WORD*>(dwAddress) = 0x3675;
+    // ค้นหาจุด Render Distance/Line of Sight ของ NameTag ใน samp.dll
+    static BYTE* pAddress = nullptr;
+    if (!pAddress) {
+        pAddress = FindPattern(hSamp, "\x75\x36\x8B\x44\x24\x14", "xxxxxx");
     }
-    
-    VirtualProtect(reinterpret_cast<LPVOID>(dwAddress), 2, dwOldProtect, &dwOldProtect);
+
+    if (pAddress) {
+        DWORD dwOldProtect;
+        VirtualProtect(pAddress, 2, PAGE_EXECUTE_READWRITE, &dwOldProtect);
+        
+        if (g_bESPEnabled) {
+            // สั่ง NOP ปิดการเช็คระยะ/สิ่งกีดขวาง (เห็นชื่อ+ID+สีชื่อ ทะลุหมด)
+            pAddress[0] = 0x90;
+            pAddress[1] = 0x90;
+        } else {
+            // คืนค่าเดิม
+            pAddress[0] = 0x75;
+            pAddress[1] = 0x36;
+        }
+        
+        VirtualProtect(pAddress, 2, dwOldProtect, &dwOldProtect);
+    }
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
